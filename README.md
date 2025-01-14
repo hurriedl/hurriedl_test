@@ -4,8 +4,21 @@
 环境:
 ```bash
 # download
-git clone https://github.com/hbb1/2d-gaussian-splatting.git --recursive
+git clone https://github.com/hurriedl/hurriedl_test.git --recursive
 
 conda env create --file environment.yml
 conda activate surfel_splatting
+```
+
+训练：
+```bash
+python train.py -s <path to COLMAP or NeRF Synthetic dataset>
+```
+
+渲染：
+```bash
+python render.py -m <path to pre-trained model>
+
+#正射图像
+python render.py -m <path to pre-trained model> --ortho --image_blending --skip_mesh
 ```
