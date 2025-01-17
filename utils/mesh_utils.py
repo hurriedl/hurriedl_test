@@ -16,6 +16,7 @@ import math
 from tqdm import tqdm
 from time import sleep
 from utils.render_utils import save_img_f32, save_img_u8, save_depth_with_label
+from scene.dataset_readers import storePly
 from functools import partial
 import open3d as o3d
 import trimesh
@@ -100,6 +101,7 @@ class GaussianExtractor(object):
         self.normals = []
         self.depth_normals = []
         self.viewpoint_stack = []
+        self.coordinate = []
 
     @torch.no_grad()
     def reconstruction(self, viewpoint_stack, ortho = False, image_blending = False):
@@ -135,12 +137,13 @@ class GaussianExtractor(object):
             normal = torch.nn.functional.normalize(render_pkg['rend_normal'], dim=0)
             depth = render_pkg['surf_depth']
             depth_normal = render_pkg['surf_normal']
+            coordinate = render_pkg['coordinate']
             self.rgbmaps.append(rgb.cpu())
             self.depthmaps.append(depth.cpu())
             self.alphamaps.append(alpha.cpu())
             self.normals.append(normal.cpu())
             self.depth_normals.append(depth_normal.cpu())
-            
+            self.coordinate.append(coordinate.cpu())       
         
         self.rgbmaps = torch.stack(self.rgbmaps, dim=0)
         self.depthmaps = torch.stack(self.depthmaps, dim=0)
@@ -313,10 +316,13 @@ class GaussianExtractor(object):
         gts_path = os.path.join(path, "gt")
         vis_path = os.path.join(path, "vis")
         dm_path = os.path.join(path, 'depth_color_map')
+        synthetic_map_path = os.path.join(path, 'synthetic_map')
         os.makedirs(render_path, exist_ok=True)
         os.makedirs(vis_path, exist_ok=True)
         os.makedirs(gts_path, exist_ok=True)
         os.makedirs(dm_path, exist_ok=True)
+        os.makedirs(synthetic_map_path, exist_ok=True)
+        
         max_array = np.zeros(len(self.viewpoint_stack))
         min_array = np.zeros(len(self.viewpoint_stack))
         
@@ -338,22 +344,58 @@ class GaussianExtractor(object):
             #save_img_u8(self.depth_normals[idx].permute(1,2,0).cpu().numpy() * 0.5 + 0.5, os.path.join(vis_path, 'depth_normal_{0:05d}'.format(idx) + ".png"))
         max_depth = max_array.max()
         min_depth = min_array.min()
-        
-        for idx, viewpoint_cam in tqdm(enumerate(self.viewpoint_stack), desc="export depth map"):
-            
-            '''origin_depth_map = self.depthmaps[idx][0].cpu().numpy()
-            depth_map_shape = origin_depth_map.shape
-            depth_map = depth_map_all_new.reshape(-1,num_depth_map)[:,idx].reshape(depth_map_shape[0],depth_map_shape[1])
-            depth_map = (depth_map-depth_map.min())/(depth_map.max() - depth_map.min())'''
-            
-            
+
+        '''for idx, viewpoint_cam in tqdm(enumerate(self.viewpoint_stack), desc="export depth map"):           
             depth_map = self.depthmaps[idx][0].cpu().numpy()
             depth_map = (depth_map-min_depth)/(max_depth - min_depth)
             save_img_u8(depth_map, os.path.join(vis_path, 'depth_{0:05d}'.format(idx) + ".png"))
-            im_color=cv2.applyColorMap(np.uint8(depth_map * 255),cv2.COLORMAP_JET)
-            
+            im_color=cv2.applyColorMap(np.uint8(depth_map * 255),cv2.COLORMAP_JET)            
             save_depth_with_label(im_color, dm_path, min_depth, max_depth, idx)
+            # 验证depth map和原图的一致性
             
+            rgb_map_gray = np.expand_dims(cv2.cvtColor(np.uint8(self.rgbmaps[idx].permute(1,2,0).cpu().numpy()*255), 
+                                                       cv2.COLOR_BGR2GRAY),axis=2)
+            synthetic_map = np.repeat(rgb_map_gray,3,axis=2)
+            synthetic_map[:,:,2] = np.uint8(depth_map*255)
+            cv2.imwrite(os.path.join(synthetic_map_path, f"synthetic_map_{idx}.png"),synthetic_map)'''
+            
+    def export_coordinate(self, path):
+        coordinate_path = os.path.join(path, 'coordinate')
+        dtg_path = os.path.join(path, 'depth_to_ground')
+        os.makedirs(coordinate_path, exist_ok=True)
+        os.makedirs(dtg_path, exist_ok=True)
+        W,H = self.viewpoint_stack[0].image_width, self.viewpoint_stack[0].image_height
+        max_array = np.zeros(len(self.viewpoint_stack))
+        min_array = np.zeros(len(self.viewpoint_stack))
+        all_depth_map = []
+        for idx, viewpoint_cam in tqdm(enumerate(self.viewpoint_stack), desc="export pixel coordinate"):
+            coordinate_matrix_xy_cam = (self.coordinate[idx].permute(1,2,0))[:,:,0:2]
+            coordinate_matrix_z_cam = self.depthmaps[idx][0]
+            coordinate_matrix_cam = torch.cat((coordinate_matrix_xy_cam,coordinate_matrix_z_cam.unsqueeze(-1)),dim=-1).view(-1, 3)
+            num_points = len(coordinate_matrix_cam)
+            coordinate_matrix_cam_expand = torch.cat((coordinate_matrix_cam,torch.ones(coordinate_matrix_cam.shape[0],1)),dim=1).unsqueeze(-1)
+            world2view = viewpoint_cam.world_view_transform
+            view2world = torch.inverse(world2view)
+            view2world_expand = view2world.unsqueeze(0).tile((num_points,1,1))
+            coordinate_matrix_world = torch.bmm(view2world_expand.to('cuda'), coordinate_matrix_cam_expand.to('cuda'))
+            xyzs = coordinate_matrix_world.squeeze(-1)[:,0:3].cpu().numpy()
+            rgb_map = self.rgbmaps[idx].permute(1,2,0).cpu().numpy()
+            storePly(os.path.join(coordinate_path, f"pixel_coordinate_{idx}.ply"),xyzs,(np.clip(np.nan_to_num(rgb_map.reshape(-1,3)), 0., 1.) * 255.).astype(np.uint8))
+            depth_map = xyzs[:,2].reshape((H,W))
+            max_array[idx] = depth_map.max()
+            min_array[idx] = depth_map.min()
+            all_depth_map.append(depth_map)
+            
+        max_depth = max_array.max()
+        min_depth = min_array.min()
+        for idx, viewpoint_cam in tqdm(enumerate(self.viewpoint_stack), desc="export depth map"):
+            depth_map = all_depth_map[idx]
+            depth_map = (depth_map-min_depth)/(max_depth -min_depth)
+            save_img_u8(depth_map, os.path.join(dtg_path, 'depth_{0:05d}'.format(idx) + ".png"))
+            
+
+        
+        
 
 
 

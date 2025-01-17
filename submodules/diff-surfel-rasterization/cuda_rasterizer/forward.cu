@@ -275,6 +275,7 @@ renderCUDA(
 	float focal_x, float focal_y,
 	const glm::vec3* __restrict__ cam_pos,
 	bool ortho,
+	const float* __restrict__ viewmatrix,
 	const float* __restrict__ projmatrix,
 	const float2* __restrict__ points_xy_image,
 	const float* __restrict__ features,
@@ -328,13 +329,14 @@ renderCUDA(
 #if RENDER_AXUTILITY
 	// render axutility ouput
 	float N[3] = {0};
-	float D = { 0 };
+	float D = {0};
 	float M1 = {0};
 	float M2 = {0};
 	float distortion = {0};
 	float median_depth = {0};
 	// float median_weight = {0};
 	float median_contributor = {-1};
+	float coordinate[3] = {0};
 
 #endif
 
@@ -394,6 +396,20 @@ renderCUDA(
 			// compute depth
 			// 计算正射情形下的深度
 			float depth;
+			glm::mat4 world2ndc = glm::mat4(
+				projmatrix[0], projmatrix[4], projmatrix[8], projmatrix[12],
+				projmatrix[1], projmatrix[5], projmatrix[9], projmatrix[13],
+				projmatrix[2], projmatrix[6], projmatrix[10], projmatrix[14],
+				projmatrix[3], projmatrix[7], projmatrix[11], projmatrix[15]
+			);
+			glm::mat4 world2cam = glm::mat4(
+				viewmatrix[0], viewmatrix[4], viewmatrix[8], viewmatrix[12],
+				viewmatrix[1], viewmatrix[5], viewmatrix[9], viewmatrix[13],
+				viewmatrix[2], viewmatrix[6], viewmatrix[10], viewmatrix[14],
+				viewmatrix[3], viewmatrix[7], viewmatrix[11], viewmatrix[15]
+			);
+			glm::mat4 ndc2world = glm::inverse(world2ndc);
+			glm::mat4 cam2world = glm::inverse(world2cam);
 			if (ortho)
 			{
 				float3 p_world; //ray-splat交点在世界坐标系中的坐标
@@ -407,17 +423,10 @@ renderCUDA(
 				c0_world.z = (*cam_pos).z;
 				float4 c0_screen = transformPoint4x4(c0_world, projmatrix);
 
-				glm::mat4 world2ndc = glm::mat4(
-					projmatrix[0], projmatrix[4], projmatrix[8], projmatrix[12],
-					projmatrix[1], projmatrix[5], projmatrix[9], projmatrix[13],
-					projmatrix[2], projmatrix[6], projmatrix[10], projmatrix[14],
-					projmatrix[3], projmatrix[7], projmatrix[11], projmatrix[15]
-				);
 				glm::vec4 p_w = glm::vec4(p_world.x,p_world.y,p_world.z,1);
 				glm::vec4 p_screen = p_w * world2ndc;
 				glm::vec4 c1_screen = glm::vec4(p_screen[0],p_screen[1],c0_screen.z,1);//c1：在当前像素对应的光线虚拟的一个“光心”
 
-				glm::mat4 ndc2world = glm::inverse(world2ndc);
 				glm::vec4 c1_world = c1_screen * ndc2world;
 				
 				float3 p_c1;
@@ -433,10 +442,7 @@ renderCUDA(
 				depth =  (rho3d <= rho2d) ? (s.x * Tw.x + s.y * Tw.y) + Tw.z : Tw.z;
 			}
 
-
-			//float depth = (s.x * Tw.x + s.y * Tw.y) + Tw.z;
 			// if a point is too small, its depth is not reliable?
-			// depth = (rho3d <= rho2d) ? depth : Tw.z 
 			if (depth < near_n) continue;
 
 			float4 nor_o = collected_normal_opacity[j];
@@ -489,6 +495,18 @@ renderCUDA(
 			// Keep track of last range entry to update this
 			// pixel.
 			last_contributor = contributor;
+
+			if (ortho)
+			{
+				float pixel_x_ndc = (2*pixf.x-W+1)/W;
+				float pixel_y_ndc = (2*pixf.y-H+1)/H;
+				glm::vec4 pixel_ndc = glm::vec4(pixel_x_ndc,pixel_y_ndc,0,1);
+				glm::mat4 ndc2cam = ndc2world * world2cam;
+				glm::vec4 pixel_cam =ndc2cam *  pixel_ndc;
+				coordinate[0] = pixel_cam.x;
+				coordinate[1] = pixel_cam.y;
+				coordinate[2] = 0.0;
+			}
 		}
 	}
 
@@ -510,6 +528,7 @@ renderCUDA(
 		for (int ch=0; ch<3; ch++) out_others[pix_id + (NORMAL_OFFSET+ch) * H * W] = N[ch];
 		out_others[pix_id + MIDDEPTH_OFFSET * H * W] = median_depth;
 		out_others[pix_id + DISTORTION_OFFSET * H * W] = distortion;
+		for (int idx=0; idx<3; idx++) out_others[pix_id + (COORDINATE_OFFSET+idx) * H * W] = coordinate[idx]; //输出当前pixel在世界坐标系的坐标
 		// out_others[pix_id + MEDIAN_WEIGHT_OFFSET * H * W] = median_weight;
 #endif
 	}
@@ -523,6 +542,7 @@ void FORWARD::render(
 	float focal_x, float focal_y,
 	const glm::vec3* cam_pos,
 	bool ortho,
+	const float* viewmatrix,
 	const float* projmatrix,
 	const float2* means2D,
 	const float* colors,
@@ -543,6 +563,7 @@ void FORWARD::render(
 		focal_x, focal_y,
 		cam_pos,
 		ortho,
+		viewmatrix,
 		projmatrix,
 		means2D,
 		colors,

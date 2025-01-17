@@ -83,13 +83,18 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
         uid = intr.id
         R = np.transpose(qvec2rotmat(extr.qvec))
         T = np.array(extr.tvec)
-        W2C = getWorld2View2(R, T)
+        #TODO:如何尽量保证与groundtruth视角一致
+        '''W2C = getWorld2View2(R, T)
         C2W = np.linalg.inv(W2C)
         C2W_new = np.array([[1,0,0,0],[0,-1,0,0],[0,0,-1,0],[0,0,0,1]])
         C2W_new[:3,3] = C2W[:3, 3]
         W2C_new = np.linalg.inv(C2W_new)
         R_ortho = W2C_new[:3,:3]
-        T_ortho = W2C_new[:3, 3] #所有z轴垂直向下后的pose
+        T_ortho = W2C_new[:3, 3] #所有z轴垂直向下后的pose'''
+        R_ortho = R
+        T_ortho = T
+        
+        
 
         if intr.model=="SIMPLE_PINHOLE":
             focal_length_x = intr.params[0]

@@ -59,6 +59,7 @@ namespace FORWARD
 		float focal_x, float focal_y,
 		const glm::vec3* cam_pos,
 		bool ortho,
+		const float* viewmatrix,
 		const float* projmatrix,
 		const float2* points_xy_image,
 		const float* features,

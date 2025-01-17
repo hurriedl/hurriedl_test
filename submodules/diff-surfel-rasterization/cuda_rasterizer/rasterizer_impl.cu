@@ -333,6 +333,7 @@ int CudaRasterizer::Rasterizer::forward(
 		focal_x, focal_y,
 		(glm::vec3*)cam_pos,
 		ortho,
+		viewmatrix,
 		projmatrix,
 		geomState.means2D,
 		feature_ptr,
